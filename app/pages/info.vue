@@ -29,8 +29,7 @@
  * loginUrl is defined here (rather than relying solely on AppHeader) because it
  * is also used in the page body for the "Log in to see more" button.
  */
-const { isSignedIn } = useAuth()
-const { user } = useUser()
+const { isSignedIn, user } = useClerkAuth()
 
 const requestUrl = useRequestURL()
 

@@ -22,8 +22,7 @@
 export default defineNuxtRouteMiddleware(async (to) => {
   if (import.meta.server) return
 
-  const { isSignedIn } = useAuth()
-  const { isLoaded, user } = useUser()
+  const { isLoaded, isSignedIn, user } = useClerkAuth()
 
   // Wait for Clerk to finish loading the user profile before checking roles.
   // watchEffect runs immediately, so if isLoaded is already true this
@@ -40,7 +39,8 @@ export default defineNuxtRouteMiddleware(async (to) => {
   }
 
   if (!isSignedIn.value) {
-    return navigateTo(`/login?redirect=${encodeURIComponent(to.fullPath)}`)
+    const fullUrl = window.location.origin + to.fullPath
+    return navigateTo(`/login?redirect=${encodeURIComponent(fullUrl)}`)
   }
 
   const roles = (user.value?.publicMetadata?.roles as string[] | undefined) ?? []

@@ -36,7 +36,7 @@
    */
   definePageMeta({ layout: 'admin', middleware: 'admin' })
   const { $contentApi } = useNuxtApp()
-  const { user } = useUser()
+  const { user } = useClerkAuth()
 
   const roles = computed(() => (user.value?.publicMetadata?.roles as string[] | undefined) ?? [])
 

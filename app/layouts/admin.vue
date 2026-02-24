@@ -39,8 +39,7 @@
    * component tree mounts at all. This layout is the safety net for direct URL
    * access where the middleware cannot act server-side.
    */
-  const { isSignedIn } = useAuth()
-  const { isLoaded, user } = useUser()
+  const { isLoaded, isSignedIn, user } = useClerkAuth()
 
   const isAdmin = computed(() => {
     const roles = (user.value?.publicMetadata?.roles as string[] | undefined) ?? []

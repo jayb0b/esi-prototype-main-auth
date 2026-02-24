@@ -123,23 +123,19 @@
  *           → POST /api/clear-migrated to remove the migration flag
  *  done     → user continues to app
  */
-const { user } = useUser()
-const { signIn, setActive } = useSignIn()
-const userStore = useUserStore()
+const { error, loading, startPasswordReset, verifyPasswordReset, completePasswordReset } = useClerkAuth()
 
 const step = ref<'start' | 'verify' | 'password' | 'done'>('start')
 const code = ref('')
 const password = ref('')
 const confirm = ref('')
-const error = ref('')
-const loading = ref(false)
 
 // Read the email stored by login.vue before it signed out and navigated here.
 // sessionStorage is always available here because login.vue navigates client-side
 // (no full page reload), so this setup code runs in the browser.
 const storedEmail = sessionStorage.getItem('migrationEmail') ?? ''
 sessionStorage.removeItem('migrationEmail')
-const userEmail = ref(storedEmail || user.value?.primaryEmailAddress?.emailAddress || '')
+const userEmail = ref(storedEmail)
 
 /**
  * Sends the password-reset OTP.
@@ -147,20 +143,8 @@ const userEmail = ref(storedEmail || user.value?.primaryEmailAddress?.emailAddre
  * Called automatically on mount; the retry button calls it again on failure.
  */
 async function initReset() {
-  error.value = ''
-  loading.value = true
-  try {
-    await signIn.value!.create({
-      strategy: 'reset_password_email_code',
-      identifier: userEmail.value,
-    })
-    step.value = 'verify'
-  } catch (err) {
-    error.value =
-      (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Could not send code.'
-  } finally {
-    loading.value = false
-  }
+  const ok = await startPasswordReset(userEmail.value)
+  if (ok) step.value = 'verify'
 }
 
 onMounted(() => {
@@ -169,46 +153,14 @@ onMounted(() => {
 
 /** Verifies the OTP. On success Clerk returns status 'needs_new_password'. */
 async function handleVerify() {
-  error.value = ''
-  loading.value = true
-  try {
-    const result = await signIn.value!.attemptFirstFactor({
-      strategy: 'reset_password_email_code',
-      code: code.value,
-    })
-    if (result.status === 'needs_new_password') {
-      step.value = 'password'
-    }
-  } catch (err) {
-    error.value =
-      (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Invalid code.'
-  } finally {
-    loading.value = false
-  }
+  const ok = await verifyPasswordReset(code.value)
+  if (ok) step.value = 'password'
 }
 
 /** Sets the new password, activates the fresh session, clears the migration flag. */
 async function handlePassword() {
-  error.value = ''
-  if (password.value !== confirm.value) {
-    error.value = 'Passwords do not match.'
-    return
-  }
-  loading.value = true
-  try {
-    const result = await signIn.value!.resetPassword({ password: password.value })
-    if (result.status === 'complete') {
-      await setActive.value!({ session: result.createdSessionId })
-      await $fetch('/api/clear-migrated', { method: 'POST' })
-      userStore.hydrate({ ...user.value?.publicMetadata, migrated: false })
-      step.value = 'done'
-    }
-  } catch (err) {
-    error.value =
-      (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Something went wrong.'
-  } finally {
-    loading.value = false
-  }
+  const ok = await completePasswordReset(password.value, confirm.value)
+  if (ok) step.value = 'done'
 }
 </script>
 

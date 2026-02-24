@@ -1,116 +1,74 @@
 <template>
   <div class="auth-page">
     <div class="auth-card">
-      <h1>Log in</h1>
-      <p class="subtitle">Welcome back</p>
 
-      <form @submit.prevent="handleSubmit">
-        <div class="field">
-          <label for="email">Email</label>
-          <input id="email" v-model="email" type="email" placeholder="you@example.com" required />
-        </div>
+      <!-- Step 1: identify the email address -->
+      <template v-if="step === 'email'">
+        <h1>Log in</h1>
+        <p class="subtitle">Welcome back</p>
 
-        <div class="field">
-          <label for="password">Password</label>
-          <input id="password" v-model="password" type="password" placeholder="••••••••" required />
-        </div>
+        <form @submit.prevent="handleEmail">
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" v-model="email" type="email" placeholder="you@example.com" required />
+          </div>
 
-        <p v-if="error" class="error">{{ error }}</p>
+          <p v-if="error" class="error">{{ error }}</p>
 
-        <button type="submit" :disabled="loading" class="btn-submit">
-          {{ loading ? 'Logging in…' : 'Log in' }}
-        </button>
-      </form>
+          <button type="submit" :disabled="loading" class="btn-submit">
+            {{ loading ? 'Checking…' : 'Continue' }}
+          </button>
+        </form>
 
-      <p class="switch">
-        Don't have an account? <NuxtLink to="/register">Get started</NuxtLink>
-      </p>
+        <p class="switch">
+          Don't have an account? <NuxtLink to="/register">Get started</NuxtLink>
+        </p>
+      </template>
+
+      <!-- Step 2: enter password for the identified account -->
+      <template v-else-if="step === 'password'">
+        <h1>Log in</h1>
+        <p class="subtitle">{{ email }}</p>
+
+        <form @submit.prevent="handlePassword">
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" v-model="password" type="password" placeholder="••••••••" required />
+          </div>
+
+          <p v-if="error" class="error">{{ error }}</p>
+
+          <button type="submit" :disabled="loading" class="btn-submit">
+            {{ loading ? 'Logging in…' : 'Log in' }}
+          </button>
+        </form>
+
+        <p class="switch">
+          <button class="link-btn" @click="step = 'email'">← Back</button>
+        </p>
+      </template>
+
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-/**
- * Login page — email + password sign-in via Clerk's custom flow.
- *
- * Supports an optional `redirect` query parameter containing the URL to send
- * the user to after a successful sign-in. This is used by satellite pages
- * (e.g. /info) that want to return the user to their original location rather
- * than the homepage. The value can be an absolute URL (cross-domain satellite
- * sites) or a relative path.
- *
- * Flow:
- *  1. User submits email + password.
- *  2. signIn.create() attempts authentication against Clerk.
- *  3. On success (status === 'complete'), setActive() writes the session cookie.
- *  4a. If publicMetadata.migrated === true: store the email in sessionStorage,
- *      sign out, then navigate to /password-reset-required. Signing out here
- *      (before navigation) ensures that page always loads without an active
- *      session, which is required to start a reset_password_email_code flow.
- *  4b. Otherwise: navigateTo() redirects to the `redirect` query param or '/'.
- *      For absolute URLs, { external: true } is required so Nuxt performs a
- *      full browser navigation instead of a client-side route change.
- */
-
-// signIn — ComputedRef<SignInResource | undefined>. Access via .value.
-// setActive — ComputedRef<SetActive | undefined>. Access via .value.
-const { signIn, setActive } = useSignIn()
-const { user } = useUser()
-const clerk = useClerk()
 const route = useRoute()
-const userStore = useUserStore()
+const { error, loading, identifyEmail, login } = useClerkAuth()
 
+const step = ref<'email' | 'password'>('email')
 const email = ref('')
 const password = ref('')
-const error = ref('')
-const loading = ref(false)
 
-/**
- * The post-login destination. Reads the `redirect` query param (set by pages
- * that link to /login with a return URL), falling back to the homepage.
- */
 const redirectTo = computed(() => (route.query.redirect as string) || '/')
 
-async function handleSubmit() {
-  error.value = ''
-  loading.value = true
-  try {
-    const attempt = await signIn.value!.create({ identifier: email.value, password: password.value })
+async function handleEmail() {
+  const showPassword = await identifyEmail(email.value)
+  if (showPassword) step.value = 'password'
+}
 
-    if (attempt.status === 'complete') {
-      // Write the Clerk session cookie so subsequent requests are authenticated.
-      await setActive.value!({ session: attempt.createdSessionId })
-
-      // Hydrate the store from publicMetadata now that the session is active.
-      userStore.hydrate(user.value?.publicMetadata ?? {})
-
-      // Migrated users must set a new password before continuing.
-      // Sign out here, before navigating, so the reset page always arrives
-      // without an active session — Clerk refuses to start a
-      // reset_password_email_code flow while one exists. The email is stashed
-      // in sessionStorage (not the URL) so it survives the navigation without
-      // being visible in the address bar or browser history.
-      if (user.value?.publicMetadata?.migrated === true) {
-        const migrationEmail =
-          user.value?.primaryEmailAddress?.emailAddress ?? email.value
-        userStore.reset()
-        sessionStorage.setItem('migrationEmail', migrationEmail)
-        await clerk.value?.signOut()
-        await navigateTo('/password-reset-required')
-        return
-      }
-
-      // Absolute URLs (satellite sites) need external: true; relative paths do not.
-      const isExternal = redirectTo.value.startsWith('http')
-      await navigateTo(redirectTo.value, { external: isExternal })
-    }
-  } catch (err) {
-    // Clerk errors carry an `errors` array. Surface the first message to the user.
-    error.value =
-      (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Something went wrong.'
-  } finally {
-    loading.value = false
-  }
+async function handlePassword() {
+  await login(email.value, password.value, redirectTo.value)
 }
 </script>
 
@@ -201,9 +159,15 @@ input:focus {
   color: #6b7280;
 }
 
-.switch a {
+.switch a,
+.link-btn {
   color: #111827;
   font-weight: 500;
   text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0;
 }
 </style>

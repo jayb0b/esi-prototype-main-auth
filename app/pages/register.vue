@@ -134,43 +134,19 @@
 </template>
 
 <script setup lang="ts">
-  /**
-   * Registration page — three-step custom sign-up flow using Clerk.
-   *
-   * Step 1 — Details (step === 'details'):
-   *   Collect email and company name. Company name is stored in Clerk's
-   *   unsafeMetadata (client-writable; not suitable for authorisation).
-   *   A CAPTCHA widget is mounted here for bot protection.
-   *   On submit: creates the Clerk sign-up record and sends an OTP to the email.
-   *
-   * Step 2 — Verify (step === 'verify'):
-   *   User enters the 6-digit OTP from their email.
-   *   On success: Clerk returns status 'missing_requirements' (password not yet
-   *   set) which advances to step 3, or 'complete' if no further requirements.
-   *
-   * Step 3 — Password (step === 'password'):
-   *   User sets and confirms their password.
-   *   On submit:
-   *     1. signUp.update() finalises the sign-up (status becomes 'complete').
-   *     2. setActive() writes the session cookie.
-   *     3. POST /api/complete-signup is called server-side to stamp
-   *        publicMetadata (roles, verified flag) onto the user via the
-   *        Clerk Backend SDK. publicMetadata is server-only and trusted for
-   *        authorisation checks.
-   *     4. User is redirected to the homepage.
-   *
-   * Clerk composable notes:
-   *  - signUp  — ComputedRef<SignUpResource | undefined>; access via .value.
-   *  - setActive — ComputedRef<SetActive | undefined>; access via .value.
-   */
-
-  const { signUp, setActive } = useSignUp()
-  const clerk = useClerk()
-  const userStore = useUserStore()
+  const { error, loading, startSignUp, verifyEmail, completeSignUp } = useClerkAuth()
 
   const step = ref<'details' | 'verify' | 'password'>('details')
 
   const email = ref('')
+
+  onMounted(() => {
+    const stored = sessionStorage.getItem('registrationEmail')
+    if (stored) {
+      email.value = stored
+      sessionStorage.removeItem('registrationEmail')
+    }
+  })
   const firstName = ref('')
   const lastName = ref('')
   const jobTitle = ref('')
@@ -180,102 +156,19 @@
   const code = ref('')
   const password = ref('')
   const confirm = ref('')
-  const error = ref('')
-  const loading = ref(false)
 
-  /**
-   * Step 1 handler.
-   * Creates the Clerk sign-up record and sends an email OTP.
-   * companyName is stored in unsafeMetadata for display/onboarding purposes only.
-   */
   async function handleDetails() {
-    error.value = ''
-    loading.value = true
-    try {
-      await signUp.value!.create({
-        emailAddress: email.value,
-        // unsafeMetadata: {
-        //   // TODO: move to SQL; unsafeMetadata is client-writable and not authoritative
-        //   firstName: firstName.value,
-        //   lastName: lastName.value,
-        //   jobTitle: jobTitle.value,
-        //   companyName: company.value,
-        //   town: town.value,
-        //   country: country.value,
-        // },
-      })
-      // Request a one-time passcode be sent to the provided email address.
-      await signUp.value!.prepareEmailAddressVerification({ strategy: 'email_code' })
-      step.value = 'verify'
-    } catch (err) {
-      error.value =
-        (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Something went wrong.'
-    } finally {
-      loading.value = false
-    }
+    const ok = await startSignUp(email.value)
+    if (ok) step.value = 'verify'
   }
 
-  /**
-   * Step 2 handler.
-   * Submits the OTP entered by the user to Clerk for verification.
-   * 'missing_requirements' means email is verified but password is still needed.
-   * 'complete' means the sign-up finished without a password step (unlikely with
-   *  current Clerk config but handled for safety).
-   */
   async function handleVerify() {
-    error.value = ''
-    loading.value = true
-    try {
-      const result = await signUp.value!.attemptEmailAddressVerification({ code: code.value })
-      if (result.status === 'missing_requirements') {
-        step.value = 'password'
-      } else if (result.status === 'complete') {
-        await setActive.value!({ session: result.createdSessionId })
-        await navigateTo('/')
-      }
-    } catch (err) {
-      error.value =
-        (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Invalid code.'
-    } finally {
-      loading.value = false
-    }
+    const result = await verifyEmail(code.value)
+    if (result === 'password') step.value = 'password'
   }
 
-  /**
-   * Step 3 handler.
-   * Sets the user's password to complete the sign-up, then activates the session
-   * and calls the server to assign initial roles via publicMetadata.
-   */
   async function handlePassword() {
-    error.value = ''
-    if (password.value !== confirm.value) {
-      error.value = 'Passwords do not match.'
-      return
-    }
-    loading.value = true
-    try {
-      const result = await signUp.value!.update({ password: password.value })
-      if (result.status === 'complete') {
-        // Activate the session before calling the API so the cookie is present.
-        await setActive.value!({ session: result.createdSessionId })
-
-        // Server-side: stamps publicMetadata.roles on the user record.
-        // Must be called after setActive so the session cookie is sent with the request.
-        await $fetch('/api/complete-signup', { method: 'POST' })
-
-        // Reload the Clerk user so publicMetadata reflects what the server just wrote,
-        // then hydrate the store from the fresh values.
-        await clerk.value?.user?.reload()
-        userStore.hydrate(clerk.value?.user?.publicMetadata ?? {})
-
-        await navigateTo('/')
-      }
-    } catch (err) {
-      error.value =
-        (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? 'Something went wrong.'
-    } finally {
-      loading.value = false
-    }
+    await completeSignUp(password.value, confirm.value)
   }
 </script>
 

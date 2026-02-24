@@ -35,18 +35,13 @@
    * useRequestURL() is used rather than useRoute() because it provides the full
    * absolute URL, which is required for cross-domain redirects.
    */
-  const { isSignedIn } = useAuth()
-  const { user } = useUser()
-  const clerk = useClerk()
-  const userStore = useUserStore()
+  const { isSignedIn, user, signOut } = useClerkAuth()
   const requestUrl = useRequestURL()
 
   const loginUrl = computed(() => `/login?redirect=${encodeURIComponent(requestUrl.href)}`)
 
   async function handleSignOut() {
-    await clerk.value?.signOut()
-    userStore.reset()
-    await navigateTo('/')
+    await signOut()
   }
 </script>
 

@@ -65,9 +65,7 @@
    * Unauthenticated users are shown an access-denied error with a login link
    * that redirects back to this page after sign-in.
    */
-  const { isSignedIn } = useAuth()
-  const { user } = useUser()
-  const userStore = useUserStore()
+  const { isSignedIn, user } = useClerkAuth()
 
   /**
    * Typed shorthand for the unsafeMetadata fields captured during registration.

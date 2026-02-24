@@ -42,8 +42,7 @@
    *  - Signed out: marketing hero with links to /register and /login.
    *  - Signed in:  personalised welcome showing the user's email.
    */
-  const { isSignedIn } = useAuth()
-  const { user } = useUser()
+  const { isSignedIn, user } = useClerkAuth()
 </script>
 
 <style scoped>
