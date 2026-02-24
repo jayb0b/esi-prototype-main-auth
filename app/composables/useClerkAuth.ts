@@ -83,6 +83,8 @@ export function useClerkAuth() {
 
         const isExternal = redirectTo.startsWith('http')
         await navigateTo(redirectTo, { external: isExternal })
+      } else {
+        error.value = `Sign-in incomplete (status: ${attempt.status})`
       }
     } catch (err) {
       error.value = clerkError(err, 'Something went wrong.')
