@@ -54,13 +54,21 @@
 
 <script setup lang="ts">
 const route = useRoute()
-const { error, loading, identifyEmail, login } = useClerkAuth()
+const { isLoaded, isSignedIn, error, loading, identifyEmail, login } = useClerkAuth()
 
 const step = ref<'email' | 'password'>('email')
 const email = ref('')
 const password = ref('')
 
 const redirectTo = computed(() => (route.query.redirect as string) || '/')
+
+// If already signed in (e.g. arriving from a satellite redirect), just redirect
+watchEffect(() => {
+  if (isLoaded.value && isSignedIn.value) {
+    const isExternal = redirectTo.value.startsWith('http')
+    navigateTo(redirectTo.value, { external: isExternal })
+  }
+})
 
 async function handleEmail() {
   const showPassword = await identifyEmail(email.value)
