@@ -66,7 +66,8 @@ export function useClerkAuth() {
     error.value = ''
     loading.value = true
     try {
-      const attempt = await signIn.value!.create({ identifier: email, password })
+      await signIn.value!.create({ identifier: email })
+      const attempt = await signIn.value!.attemptFirstFactor({ strategy: 'password', password })
 
       if (attempt.status === 'complete') {
         await setActiveSignIn.value!({ session: attempt.createdSessionId })
