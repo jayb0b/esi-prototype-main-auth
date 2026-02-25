@@ -250,6 +250,40 @@ export function useClerkAuth() {
   }
 
   /**
+   * Completes a user-initiated forgot-password flow.
+   * Resets the password, activates the session, clears the migration flag if
+   * present, then navigates home.
+   */
+  async function completeForgotPasswordReset(password: string, confirmPassword: string): Promise<boolean> {
+    error.value = ''
+    if (password !== confirmPassword) {
+      error.value = 'Passwords do not match.'
+      return false
+    }
+    loading.value = true
+    try {
+      const result = await signIn.value!.resetPassword({ password })
+      if (result.status === 'complete') {
+        await setActiveSignIn.value!({ session: result.createdSessionId })
+        if (user.value?.publicMetadata?.migrated === true) {
+          await $fetch('/api/clear-migrated', { method: 'POST' })
+          userStore.hydrate({ ...user.value?.publicMetadata, migrated: false })
+        } else {
+          userStore.hydrate(user.value?.publicMetadata ?? {})
+        }
+        await navigateTo('/')
+        return true
+      }
+      return false
+    } catch (err) {
+      error.value = clerkError(err, 'Something went wrong.')
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
    * Resets the password, activates the new session, then calls
    * /api/clear-migrated to remove the migration flag from publicMetadata.
    */
@@ -284,6 +318,6 @@ export function useClerkAuth() {
     identifyEmail, login, signOut,
     submitSecondFactor,
     startSignUp, verifyEmail, completeSignUp,
-    startPasswordReset, verifyPasswordReset, completePasswordReset,
+    startPasswordReset, verifyPasswordReset, completePasswordReset, completeForgotPasswordReset,
   }
 }

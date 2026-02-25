@@ -2,10 +2,10 @@
   <div class="auth-page">
     <div class="auth-card">
 
-      <!-- Step 1: identify the email address -->
+      <!-- Step 1: enter email address -->
       <template v-if="step === 'email'">
-        <h1>Log in</h1>
-        <p class="subtitle">Welcome back</p>
+        <h1>Forgot password?</h1>
+        <p class="subtitle">Enter your email and we'll send you a reset code.</p>
 
         <form @submit.prevent="handleEmail">
           <div class="field">
@@ -16,24 +16,32 @@
           <p v-if="error" class="error">{{ error }}</p>
 
           <button type="submit" :disabled="loading" class="btn-submit">
-            {{ loading ? 'Checking…' : 'Continue' }}
+            {{ loading ? 'Sending…' : 'Send reset code' }}
           </button>
         </form>
 
         <p class="switch">
-          Don't have an account? <NuxtLink to="/register">Get started</NuxtLink>
+          <NuxtLink to="/login">← Back to log in</NuxtLink>
         </p>
       </template>
 
-      <!-- Step 3: email verification code (Clerk periodic reverification) -->
+      <!-- Step 2: enter OTP -->
       <template v-else-if="step === 'verify'">
         <h1>Check your email</h1>
-        <p class="subtitle">We sent a code to {{ pendingSecondFactor?.safeIdentifier }}</p>
+        <p class="subtitle">We sent a reset code to <strong>{{ email }}</strong>.</p>
 
         <form @submit.prevent="handleVerify">
           <div class="field">
-            <label for="code">Verification code</label>
-            <input id="code" v-model="verifyCode" type="text" inputmode="numeric" placeholder="123456" required autocomplete="one-time-code" />
+            <label for="code">Reset code</label>
+            <input
+              id="code"
+              v-model="code"
+              type="text"
+              inputmode="numeric"
+              placeholder="123456"
+              autocomplete="one-time-code"
+              required
+            />
           </div>
 
           <p v-if="error" class="error">{{ error }}</p>
@@ -42,31 +50,34 @@
             {{ loading ? 'Verifying…' : 'Verify' }}
           </button>
         </form>
+
+        <p class="switch">
+          <button class="link-btn" @click="step = 'email'">← Try a different email</button>
+        </p>
       </template>
 
-      <!-- Step 2: enter password for the identified account -->
+      <!-- Step 3: set new password -->
       <template v-else-if="step === 'password'">
-        <h1>Log in</h1>
-        <p class="subtitle">{{ email }}</p>
+        <h1>Set a new password</h1>
+        <p class="subtitle">Choose a strong password for your account.</p>
 
         <form @submit.prevent="handlePassword">
           <div class="field">
-            <label for="password">Password</label>
+            <label for="password">New password</label>
             <input id="password" v-model="password" type="password" placeholder="••••••••" required />
+          </div>
+
+          <div class="field">
+            <label for="confirm">Confirm password</label>
+            <input id="confirm" v-model="confirm" type="password" placeholder="••••••••" required />
           </div>
 
           <p v-if="error" class="error">{{ error }}</p>
 
           <button type="submit" :disabled="loading" class="btn-submit">
-            {{ loading ? 'Logging in…' : 'Log in' }}
+            {{ loading ? 'Saving…' : 'Set new password' }}
           </button>
         </form>
-
-        <p class="switch">
-          <button class="link-btn" @click="step = 'email'">← Back</button>
-          &nbsp;·&nbsp;
-          <NuxtLink to="/forgot-password">Forgot password?</NuxtLink>
-        </p>
       </template>
 
     </div>
@@ -74,36 +85,26 @@
 </template>
 
 <script setup lang="ts">
-const route = useRoute()
-const { isLoaded, isSignedIn, error, loading, pendingSecondFactor, identifyEmail, login, submitSecondFactor } = useClerkAuth()
+const { error, loading, startPasswordReset, verifyPasswordReset, completeForgotPasswordReset } = useClerkAuth()
 
-const step = ref<'email' | 'password' | 'verify'>('email')
+const step = ref<'email' | 'verify' | 'password'>('email')
 const email = ref('')
+const code = ref('')
 const password = ref('')
-const verifyCode = ref('')
-
-const redirectTo = computed(() => (route.query.redirect as string) || '/')
-
-// If already signed in (e.g. arriving from a satellite redirect), just redirect
-watchEffect(() => {
-  if (isLoaded.value && isSignedIn.value) {
-    const isExternal = redirectTo.value.startsWith('http')
-    navigateTo(redirectTo.value, { external: isExternal })
-  }
-})
+const confirm = ref('')
 
 async function handleEmail() {
-  const showPassword = await identifyEmail(email.value)
-  if (showPassword) step.value = 'password'
-}
-
-async function handlePassword() {
-  const needsVerify = await login(email.value, password.value, redirectTo.value)
-  if (needsVerify) step.value = 'verify'
+  const ok = await startPasswordReset(email.value)
+  if (ok) step.value = 'verify'
 }
 
 async function handleVerify() {
-  await submitSecondFactor(verifyCode.value)
+  const ok = await verifyPasswordReset(code.value)
+  if (ok) step.value = 'password'
+}
+
+async function handlePassword() {
+  await completeForgotPasswordReset(password.value, confirm.value)
 }
 </script>
 
@@ -135,6 +136,7 @@ h1 {
 .subtitle {
   color: #6b7280;
   margin: 0 0 2rem;
+  line-height: 1.5;
 }
 
 .field {
