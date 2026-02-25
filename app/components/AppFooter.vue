@@ -3,7 +3,7 @@
     <div class="footer-inner">
       <a href="https://www.silphium.co.uk" class="footer-link">ESI.info</a>
       <a href="https://www.buttonface.co.uk" class="footer-link">External Works</a>
-      <a href="https://www.buttonface.co.uk" class="footer-link">Envirpro</a>
+      <a href="https://www.jaybob.website" class="footer-link">Enviropro</a>
     </div>
   </footer>
 </template>
