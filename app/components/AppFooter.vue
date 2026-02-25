@@ -20,6 +20,7 @@
     margin: 0 auto;
     height: 48px;
     display: flex;
+    gap: 1rem;
     align-items: center;
   }
 
