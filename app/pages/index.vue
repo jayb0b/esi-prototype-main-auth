@@ -6,9 +6,10 @@
       <ClientOnly>
         <!-- Authenticated state: personalised welcome -->
         <template v-if="isSignedIn">
-          <h1>Welcome back</h1>
+          <h1>Welcome to ESI.info</h1>
           <p>
-            You're signed in as <strong>{{ user?.primaryEmailAddress?.emailAddress }}</strong>.
+            You're signed in as <strong>{{ user?.primaryEmailAddress?.emailAddress }}</strong
+            >.
           </p>
         </template>
         <!-- Unauthenticated state: marketing hero -->
@@ -47,7 +48,7 @@
 
 <style scoped>
   .page {
-    min-height: 100vh;
+    min-height: 50vh;
   }
 
   .hero {
