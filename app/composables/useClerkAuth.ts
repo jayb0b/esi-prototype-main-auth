@@ -70,7 +70,9 @@ export function useClerkAuth() {
       // Using signIn.create({ identifier, password }) in one call returns
       // needs_second_factor in some Clerk configurations even with MFA disabled.
       await signIn.value!.create({ identifier: email })
+      console.log('after create:', signIn.value!.status, JSON.stringify(signIn.value!.supportedSecondFactors))
       const attempt = await signIn.value!.attemptFirstFactor({ strategy: 'password', password })
+      console.log('after attempt:', attempt.status, JSON.stringify(attempt.supportedSecondFactors))
 
       if (attempt.status === 'complete') {
         await setActiveSignIn.value!({ session: attempt.createdSessionId })
