@@ -66,6 +66,16 @@ export function useClerkAuth() {
     error.value = ''
     loading.value = true
     try {
+      // Clear any stale expired session before starting a fresh sign-in.
+      // Without this, an expired-but-not-logged-out session causes Clerk to
+      // return needs_second_factor on the next login attempt.
+      if (clerk.value?.session) {
+        await clerk.value.signOut()
+      }
+
+      // Two-step sign-in: create first, then attempt the first factor separately.
+      // Using signIn.create({ identifier, password }) in one call returns
+      // needs_second_factor in some Clerk configurations even with MFA disabled.
       await signIn.value!.create({ identifier: email })
       const attempt = await signIn.value!.attemptFirstFactor({ strategy: 'password', password })
 
