@@ -15,6 +15,8 @@ export function useClerkAuth() {
 
   const error = ref('')
   const loading = ref(false)
+  const pendingSecondFactor = ref<{ safeIdentifier: string; emailAddressId: string } | null>(null)
+  const pendingRedirect = ref('')
 
   function clerkError(err: unknown, fallback: string): string {
     return (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? fallback
@@ -62,39 +64,75 @@ export function useClerkAuth() {
    * Migrated users are signed out and routed to /password-reset-required
    * instead; their email is stashed in sessionStorage for that page to pick up.
    */
-  async function login(email: string, password: string, redirectTo: string = '/') {
+  /**
+   * Returns true if Clerk requires an email verification code as a second step.
+   * This is Clerk's periodic reverification behaviour — unrelated to MFA settings.
+   */
+  async function login(email: string, password: string, redirectTo: string = '/'): Promise<boolean> {
     error.value = ''
     loading.value = true
     try {
-      // Two-step sign-in: create first, then attempt the first factor separately.
-      // Using signIn.create({ identifier, password }) in one call returns
-      // needs_second_factor in some Clerk configurations even with MFA disabled.
       const attempt = await signIn.value!.create({ identifier: email, password })
-      console.log('after create:', attempt.status, JSON.stringify(attempt.supportedSecondFactors))
 
       if (attempt.status === 'complete') {
-        await setActiveSignIn.value!({ session: attempt.createdSessionId })
-        userStore.hydrate(user.value?.publicMetadata ?? {})
-
-        if (user.value?.publicMetadata?.migrated === true) {
-          const migrationEmail = user.value?.primaryEmailAddress?.emailAddress ?? email
-          userStore.reset()
-          sessionStorage.setItem('migrationEmail', migrationEmail)
-          await clerk.value?.signOut()
-          await navigateTo('/password-reset-required')
-          return
-        }
-
-        const isExternal = redirectTo.startsWith('http')
-        await navigateTo(redirectTo, { external: isExternal })
-      } else {
-        error.value = `Sign-in incomplete (status: ${attempt.status})`
+        return await _activateSession(attempt, email, redirectTo)
       }
+
+      if (attempt.status === 'needs_second_factor') {
+        const factor = (attempt.supportedSecondFactors as any[])
+          ?.find(f => f.strategy === 'email_code')
+        if (factor) {
+          await signIn.value!.prepareSecondFactor({ strategy: 'email_code', emailAddressId: factor.emailAddressId } as any)
+          pendingSecondFactor.value = { safeIdentifier: factor.safeIdentifier ?? email, emailAddressId: factor.emailAddressId }
+          pendingRedirect.value = redirectTo
+          return true
+        }
+      }
+
+      error.value = `Sign-in incomplete (status: ${attempt.status})`
+      return false
     } catch (err) {
       error.value = clerkError(err, 'Something went wrong.')
+      return false
     } finally {
       loading.value = false
     }
+  }
+
+  /** Submits the email verification code Clerk requires after needs_second_factor. */
+  async function submitSecondFactor(code: string): Promise<void> {
+    error.value = ''
+    loading.value = true
+    try {
+      const attempt = await signIn.value!.attemptSecondFactor({ strategy: 'email_code', code } as any)
+      if (attempt.status === 'complete') {
+        await _activateSession(attempt, '', pendingRedirect.value)
+      } else {
+        error.value = `Verification incomplete (status: ${attempt.status})`
+      }
+    } catch (err) {
+      error.value = clerkError(err, 'Invalid code.')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function _activateSession(attempt: any, email: string, redirectTo: string): Promise<boolean> {
+    await setActiveSignIn.value!({ session: attempt.createdSessionId })
+    userStore.hydrate(user.value?.publicMetadata ?? {})
+
+    if (user.value?.publicMetadata?.migrated === true) {
+      const migrationEmail = user.value?.primaryEmailAddress?.emailAddress ?? email
+      userStore.reset()
+      sessionStorage.setItem('migrationEmail', migrationEmail)
+      await clerk.value?.signOut()
+      await navigateTo('/password-reset-required')
+      return false
+    }
+
+    const isExternal = redirectTo.startsWith('http')
+    await navigateTo(redirectTo, { external: isExternal })
+    return false
   }
 
   async function signOut() {
@@ -242,7 +280,9 @@ export function useClerkAuth() {
   return {
     isLoaded, isSignedIn, user,
     error, loading,
+    pendingSecondFactor,
     identifyEmail, login, signOut,
+    submitSecondFactor,
     startSignUp, verifyEmail, completeSignUp,
     startPasswordReset, verifyPasswordReset, completePasswordReset,
   }

@@ -25,6 +25,25 @@
         </p>
       </template>
 
+      <!-- Step 3: email verification code (Clerk periodic reverification) -->
+      <template v-else-if="step === 'verify'">
+        <h1>Check your email</h1>
+        <p class="subtitle">We sent a code to {{ pendingSecondFactor?.safeIdentifier }}</p>
+
+        <form @submit.prevent="handleVerify">
+          <div class="field">
+            <label for="code">Verification code</label>
+            <input id="code" v-model="verifyCode" type="text" inputmode="numeric" placeholder="123456" required autocomplete="one-time-code" />
+          </div>
+
+          <p v-if="error" class="error">{{ error }}</p>
+
+          <button type="submit" :disabled="loading" class="btn-submit">
+            {{ loading ? 'Verifying…' : 'Verify' }}
+          </button>
+        </form>
+      </template>
+
       <!-- Step 2: enter password for the identified account -->
       <template v-else-if="step === 'password'">
         <h1>Log in</h1>
@@ -54,11 +73,12 @@
 
 <script setup lang="ts">
 const route = useRoute()
-const { isLoaded, isSignedIn, error, loading, identifyEmail, login } = useClerkAuth()
+const { isLoaded, isSignedIn, error, loading, pendingSecondFactor, identifyEmail, login, submitSecondFactor } = useClerkAuth()
 
-const step = ref<'email' | 'password'>('email')
+const step = ref<'email' | 'password' | 'verify'>('email')
 const email = ref('')
 const password = ref('')
+const verifyCode = ref('')
 
 const redirectTo = computed(() => (route.query.redirect as string) || '/')
 
@@ -76,7 +96,12 @@ async function handleEmail() {
 }
 
 async function handlePassword() {
-  await login(email.value, password.value, redirectTo.value)
+  const needsVerify = await login(email.value, password.value, redirectTo.value)
+  if (needsVerify) step.value = 'verify'
+}
+
+async function handleVerify() {
+  await submitSecondFactor(verifyCode.value)
 }
 </script>
 
