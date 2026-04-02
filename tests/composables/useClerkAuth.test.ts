@@ -85,15 +85,14 @@ describe('useClerkAuth', () => {
       expect(mockNavigateTo).not.toHaveBeenCalled()
     })
 
-    it('redirects to /register and stores email for unknown address', async () => {
+    it('returns "register" for an unknown email without navigating', async () => {
       mockFetch.mockResolvedValue({ exists: false })
       const { identifyEmail } = useClerkAuth()
 
       const result = await identifyEmail('new@example.com')
 
-      expect(result).toBe(false)
-      expect(sessionStorage.getItem('registrationEmail')).toBe('new@example.com')
-      expect(mockNavigateTo).toHaveBeenCalledWith('/register')
+      expect(result).toBe('register')
+      expect(mockNavigateTo).not.toHaveBeenCalled()
     })
 
     it('redirects to /password-reset-required and stores email for migrated user', async () => {
@@ -122,22 +121,19 @@ describe('useClerkAuth', () => {
 
   describe('login', () => {
     it('signs in and redirects on success', async () => {
-      mockSignIn.create.mockResolvedValue({})
-      mockSignIn.attemptFirstFactor.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' })
+      mockSignIn.create.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' })
       mockSetActiveSignIn.mockResolvedValue(undefined)
 
       const { login } = useClerkAuth()
       await login('user@example.com', 'password123', '/dashboard')
 
-      expect(mockSignIn.create).toHaveBeenCalledWith({ identifier: 'user@example.com' })
-      expect(mockSignIn.attemptFirstFactor).toHaveBeenCalledWith({ strategy: 'password', password: 'password123' })
+      expect(mockSignIn.create).toHaveBeenCalledWith({ identifier: 'user@example.com', password: 'password123' })
       expect(mockSetActiveSignIn).toHaveBeenCalledWith({ session: 'sess_1' })
       expect(mockNavigateTo).toHaveBeenCalledWith('/dashboard', { external: false })
     })
 
     it('uses external navigation for absolute redirect URLs', async () => {
-      mockSignIn.create.mockResolvedValue({})
-      mockSignIn.attemptFirstFactor.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' })
+      mockSignIn.create.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' })
       mockSetActiveSignIn.mockResolvedValue(undefined)
 
       const { login } = useClerkAuth()
@@ -147,13 +143,12 @@ describe('useClerkAuth', () => {
     })
 
     it('sets error when sign-in status is not complete', async () => {
-      mockSignIn.create.mockResolvedValue({})
-      mockSignIn.attemptFirstFactor.mockResolvedValue({ status: 'needs_second_factor' })
+      mockSignIn.create.mockResolvedValue({ status: 'unknown_status' })
 
       const { login, error } = useClerkAuth()
       await login('user@example.com', 'password123')
 
-      expect(error.value).toBe('Sign-in incomplete (status: needs_second_factor)')
+      expect(error.value).toBe('Sign-in incomplete (status: unknown_status)')
       expect(mockNavigateTo).not.toHaveBeenCalled()
     })
 
@@ -230,10 +225,14 @@ describe('useClerkAuth', () => {
 
   // ── completeSignUp ─────────────────────────────────────────────────────
 
+  const registrationData = {
+    existingPersonId: null, town: 'London', country: 'GB',
+  }
+
   describe('completeSignUp', () => {
     it('sets error immediately when passwords do not match', async () => {
       const { completeSignUp, error } = useClerkAuth()
-      const result = await completeSignUp('pass1', 'pass2')
+      const result = await completeSignUp('pass1', 'pass2', { ...registrationData })
 
       expect(result).toBe(false)
       expect(error.value).toBe('Passwords do not match.')
@@ -247,12 +246,62 @@ describe('useClerkAuth', () => {
       mockClerk.user.reload.mockResolvedValue(undefined)
 
       const { completeSignUp } = useClerkAuth()
-      const result = await completeSignUp('password123', 'password123')
+      const result = await completeSignUp('password123', 'password123', { ...registrationData })
 
       expect(result).toBe(true)
       expect(mockSignUp.update).toHaveBeenCalledWith({ password: 'password123' })
-      expect(mockNavigateTo).toHaveBeenCalledWith('/')
+      expect(mockNavigateTo).toHaveBeenCalledWith('/', { external: false })
     })
+  })
+
+  // ── email normalisation ────────────────────────────────────────────────
+
+  describe('email normalisation', () => {
+    it('identifyEmail lowercases and trims before calling the API', async () => {
+      mockFetch.mockResolvedValue({ exists: true, migrated: false })
+      const { identifyEmail } = useClerkAuth()
+
+      await identifyEmail('  USER@EXAMPLE.COM  ')
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/check-email',
+        expect.objectContaining({ body: { email: 'user@example.com' } }),
+      )
+    })
+
+    it('login lowercases and trims the identifier sent to Clerk', async () => {
+      mockSignIn.create.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' })
+      mockSetActiveSignIn.mockResolvedValue(undefined)
+      const { login } = useClerkAuth()
+
+      await login('  USER@EXAMPLE.COM  ', 'password123')
+
+      expect(mockSignIn.create).toHaveBeenCalledWith(
+        expect.objectContaining({ identifier: 'user@example.com' }),
+      )
+    })
+
+    it('startSignUp lowercases and trims the email address sent to Clerk', async () => {
+      mockSignUp.create.mockResolvedValue({})
+      mockSignUp.prepareEmailAddressVerification.mockResolvedValue({})
+      const { startSignUp } = useClerkAuth()
+
+      await startSignUp('  NEW@EXAMPLE.COM  ')
+
+      expect(mockSignUp.create).toHaveBeenCalledWith({ emailAddress: 'new@example.com' })
+    })
+
+    it('startPasswordReset lowercases and trims the identifier sent to Clerk', async () => {
+      mockSignIn.create.mockResolvedValue({})
+      const { startPasswordReset } = useClerkAuth()
+
+      await startPasswordReset('  USER@EXAMPLE.COM  ')
+
+      expect(mockSignIn.create).toHaveBeenCalledWith(
+        expect.objectContaining({ identifier: 'user@example.com' }),
+      )
+    })
+
   })
 
   // ── completePasswordReset ──────────────────────────────────────────────
@@ -277,7 +326,6 @@ describe('useClerkAuth', () => {
       expect(result).toBe(true)
       expect(mockSetActiveSignIn).toHaveBeenCalledWith({ session: 'sess_4' })
       expect(mockFetch).toHaveBeenCalledWith('/api/clear-migrated', { method: 'POST' })
-      expect(mockUserStore.hydrate).toHaveBeenCalledWith(expect.objectContaining({ migrated: false }))
     })
   })
 })

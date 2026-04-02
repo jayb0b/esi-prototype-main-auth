@@ -4,6 +4,10 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   modules: ['@nuxt/eslint', '@clerk/nuxt', '@pinia/nuxt'],
   css: ['~/assets/main.css'],
+  runtimeConfig: {
+    contentApiUrl: '',
+    contentApiServerSecret: '',
+  },
   $development: {
     devServer: { host: '0.0.0.0' },
   },

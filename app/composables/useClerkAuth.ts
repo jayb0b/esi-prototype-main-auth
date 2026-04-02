@@ -1,10 +1,16 @@
+import type { SignInResource, SignInSecondFactor } from '@clerk/types'
+
 /**
  * useClerkAuth — single source of truth for all Clerk interactions.
  *
  * Named to avoid collision with @clerk/nuxt's own `useAuth` (which exposes
- * session state). Pages own their form-field and UI step state; this
- * composable owns every Clerk API call, session activation, store hydration,
- * and navigation that results from them.
+ * raw session state). Pages own their form-field and UI step state; this
+ * composable owns every Clerk API call, session activation, and navigation
+ * that results from them.
+ *
+ * Store hydration is handled separately by the user-store.client.ts plugin,
+ * which watches Clerk's reactive user state and stays in sync across all
+ * navigations — including hard reloads and SSR.
  */
 export function useClerkAuth() {
   const { signIn, setActive: setActiveSignIn } = useSignIn()
@@ -15,9 +21,17 @@ export function useClerkAuth() {
 
   const error = ref('')
   const loading = ref(false)
+
+  /**
+   * State for Clerk's periodic email reverification (needs_second_factor).
+   * Populated by login() when a second step is required; consumed by
+   * submitSecondFactor(). pendingRedirect holds the original redirectTo
+   * so navigation can complete after verification.
+   */
   const pendingSecondFactor = ref<{ safeIdentifier: string; emailAddressId: string } | null>(null)
   const pendingRedirect = ref('')
 
+  /** Extracts the first Clerk error message, falling back to `fallback`. */
   function clerkError(err: unknown, fallback: string): string {
     return (err as { errors?: { message: string }[] })?.errors?.[0]?.message ?? fallback
   }
@@ -25,23 +39,22 @@ export function useClerkAuth() {
   // ── Sign-in ────────────────────────────────────────────────────────────────
 
   /**
-   * Checks whether an email exists in Clerk and determines the next login step.
-   * Returns true if the password field should be shown.
-   * Navigates away (and returns false) for the other two cases:
-   *  - Unknown email  → stores email in sessionStorage, redirects to /register
-   *  - Migrated user  → stores email in sessionStorage, redirects to /password-reset-required
+   * Checks whether an email exists in Clerk and determines the next step.
+   *  - true       → known, non-migrated user; show password field
+   *  - 'register' → unknown email; caller should start the registration flow
+   *  - false      → migrated user; navigated to /password-reset-required
    */
-  async function identifyEmail(email: string): Promise<boolean> {
+  async function identifyEmail(email: string): Promise<true | 'register' | false> {
+    email = email.trim().toLowerCase()
     error.value = ''
     loading.value = true
     try {
-      const result = await $fetch('/api/check-email', { method: 'POST', body: { email } }) as
-        { exists: false } | { exists: true; migrated: boolean }
+      const result = (await $fetch('/api/check-email', { method: 'POST', body: { email } })) as
+        | { exists: false }
+        | { exists: true; migrated: boolean }
 
       if (!result.exists) {
-        sessionStorage.setItem('registrationEmail', email)
-        await navigateTo('/register')
-        return false
+        return 'register'
       }
 
       if (result.migrated) {
@@ -60,30 +73,39 @@ export function useClerkAuth() {
   }
 
   /**
-   * Authenticates with email + password, then redirects to `redirectTo`.
-   * Migrated users are signed out and routed to /password-reset-required
-   * instead; their email is stashed in sessionStorage for that page to pick up.
+   * Authenticates with email + password.
+   * Returns true if Clerk requires a second-factor email code (periodic reverification).
+   * Migrated users are signed out and routed to /password-reset-required instead.
    */
-  /**
-   * Returns true if Clerk requires an email verification code as a second step.
-   * This is Clerk's periodic reverification behaviour — unrelated to MFA settings.
-   */
-  async function login(email: string, password: string, redirectTo: string = '/'): Promise<boolean> {
+  async function login(
+    email: string,
+    password: string,
+    redirectTo: string = '/'
+  ): Promise<boolean> {
+    email = email.trim().toLowerCase()
     error.value = ''
     loading.value = true
     try {
       const attempt = await signIn.value!.create({ identifier: email, password })
 
       if (attempt.status === 'complete') {
-        return await _activateSession(attempt, email, redirectTo)
+        return await activateSession(attempt, email, redirectTo)
       }
 
       if (attempt.status === 'needs_second_factor') {
-        const factor = (attempt.supportedSecondFactors as any[])
-          ?.find(f => f.strategy === 'email_code')
+        type EmailCodeFactor = Extract<SignInSecondFactor, { strategy: 'email_code' }>
+        const factor = attempt.supportedSecondFactors?.find(
+          (f): f is EmailCodeFactor => f.strategy === 'email_code'
+        )
         if (factor) {
-          await signIn.value!.prepareSecondFactor({ strategy: 'email_code', emailAddressId: factor.emailAddressId } as any)
-          pendingSecondFactor.value = { safeIdentifier: factor.safeIdentifier ?? email, emailAddressId: factor.emailAddressId }
+          await signIn.value!.prepareSecondFactor({
+            strategy: 'email_code',
+            emailAddressId: factor.emailAddressId,
+          })
+          pendingSecondFactor.value = {
+            safeIdentifier: factor.safeIdentifier ?? email,
+            emailAddressId: factor.emailAddressId,
+          }
           pendingRedirect.value = redirectTo
           return true
         }
@@ -99,14 +121,18 @@ export function useClerkAuth() {
     }
   }
 
-  /** Submits the email verification code Clerk requires after needs_second_factor. */
+  /**
+   * Submits the email verification code for Clerk's periodic reverification.
+   * Should only be called after login() returns true (needs_second_factor).
+   * Navigates to pendingRedirect on success.
+   */
   async function submitSecondFactor(code: string): Promise<void> {
     error.value = ''
     loading.value = true
     try {
-      const attempt = await signIn.value!.attemptSecondFactor({ strategy: 'email_code', code } as any)
+      const attempt = await signIn.value!.attemptSecondFactor({ strategy: 'email_code', code })
       if (attempt.status === 'complete') {
-        await _activateSession(attempt, '', pendingRedirect.value)
+        await activateSession(attempt, '', pendingRedirect.value)
       } else {
         error.value = `Verification incomplete (status: ${attempt.status})`
       }
@@ -117,9 +143,18 @@ export function useClerkAuth() {
     }
   }
 
-  async function _activateSession(attempt: any, email: string, redirectTo: string): Promise<boolean> {
+  /**
+   * Activates the Clerk session after a completed sign-in attempt.
+   * Intercepts migrated users before they reach the app: signs them out,
+   * stashes their email in sessionStorage, and routes to /password-reset-required.
+   * All other users are navigated to redirectTo (supports external URLs).
+   */
+  async function activateSession(
+    attempt: SignInResource,
+    email: string,
+    redirectTo: string
+  ): Promise<boolean> {
     await setActiveSignIn.value!({ session: attempt.createdSessionId })
-    userStore.hydrate(user.value?.publicMetadata ?? {})
 
     if (user.value?.publicMetadata?.migrated === true) {
       const migrationEmail = user.value?.primaryEmailAddress?.emailAddress ?? email
@@ -130,21 +165,53 @@ export function useClerkAuth() {
       return false
     }
 
+    userStore.hydrate(user.value!.publicMetadata as Record<string, unknown>)
+    await userStore.loadPersonContact()
+
     const isExternal = redirectTo.startsWith('http')
-    await navigateTo(redirectTo, { external: isExternal })
+    // buildUrlWithAuth appends ?__clerk_db_jwt for satellite session sync on shared-parent domains
+    const destination = isExternal ? clerk.value!.buildUrlWithAuth(redirectTo) : redirectTo
+    await navigateTo(destination, { external: isExternal })
     return false
   }
 
+  /** Signs out of Clerk, resets the user store, and navigates to /. */
   async function signOut() {
     await clerk.value?.signOut()
     userStore.reset()
     await navigateTo('/')
   }
 
-  // ── Registration (3 steps) ─────────────────────────────────────────────────
+  // ── Registration (4 steps) ─────────────────────────────────────────────────
 
-  /** Creates the sign-up record and sends an email OTP. */
+  /**
+   * Pre-step: checks email + IP to decide which registration path to take.
+   * Returns { fastTrack, existingPersonId } or null on error.
+   */
+  async function checkRegistration(
+    email: string
+  ): Promise<{ fastTrack: boolean; existingPersonId: number | null; town: string | null; country: string | null } | null> {
+    error.value = ''
+    loading.value = true
+    try {
+      return await $fetch('/api/check-registration', {
+        method: 'POST',
+        body: { email: email.trim().toLowerCase() },
+      })
+    } catch (err) {
+      error.value = clerkError(err, 'Something went wrong.')
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Step 1: creates the Clerk sign-up record and sends an email OTP.
+   * Returns true if the OTP was sent successfully.
+   */
   async function startSignUp(email: string): Promise<boolean> {
+    email = email.trim().toLowerCase()
     error.value = ''
     loading.value = true
     try {
@@ -160,9 +227,10 @@ export function useClerkAuth() {
   }
 
   /**
-   * Verifies the email OTP.
+   * Step 2: verifies the email OTP.
    * Returns 'password' if a password is still required, 'complete' if the
-   * sign-up finished without one, or null on error.
+   * sign-up finished without one (unlikely with current Clerk config), or
+   * null on error.
    */
   async function verifyEmail(code: string): Promise<'password' | 'complete' | null> {
     error.value = ''
@@ -185,27 +253,110 @@ export function useClerkAuth() {
   }
 
   /**
-   * Sets the password to finalise sign-up, then calls /api/complete-signup
-   * server-side to stamp publicMetadata before redirecting home.
+   * Step 2b: creates the person record in the content API immediately after
+   * email verification, before the user has a session.
+   *
+   * Returns the new person's ID, or null on failure. Failure is non-fatal —
+   * the caller should still proceed to the password step.
    */
-  async function completeSignUp(password: string, confirmPassword: string): Promise<boolean> {
+  async function createPersonAfterVerify(data: {
+    email: string
+    firstName?: string
+    lastName?: string
+    jobTitle?: string
+    companyName?: string
+    town?: string
+    country?: string
+  }): Promise<number | null> {
+    error.value = ''
+    loading.value = true
+    try {
+      const result = await $fetch<{ personId: number | null }>('/api/create-person-pre-auth', {
+        method: 'POST',
+        body: data,
+      })
+      return result.personId
+    } catch (err) {
+      error.value = clerkError(err, 'Could not save your details. You can still continue.')
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Step 3: sets the password to finalise sign-up.
+   * Activates the session, then calls /api/complete-signup to stamp ROLE_USER
+   * onto publicMetadata and PATCH the person record (created at step 2b) with
+   * the Clerk userId and geo-detected town/country.
+   * Reloads the Clerk user so publicMetadata is fresh before navigating home.
+   * Signs out and resets the store if anything fails after session activation.
+   */
+  async function completeSignUp(
+    password: string,
+    confirmPassword: string,
+    registrationData: {
+      existingPersonId?: number | null
+      town?: string
+      country?: string
+    },
+    redirectTo: string = '/'
+  ): Promise<boolean> {
     error.value = ''
     if (password !== confirmPassword) {
       error.value = 'Passwords do not match.'
       return false
     }
     loading.value = true
+    let sessionActivated = false
     try {
       const result = await signUp.value!.update({ password })
       if (result.status === 'complete') {
         await setActiveSignUp.value!({ session: result.createdSessionId })
-        await $fetch('/api/complete-signup', { method: 'POST' })
+        sessionActivated = true
+        await $fetch('/api/complete-signup', { method: 'POST', body: registrationData })
         await clerk.value?.user?.reload()
-        userStore.hydrate(clerk.value?.user?.publicMetadata ?? {})
-        await navigateTo('/')
+        userStore.hydrate(user.value!.publicMetadata as Record<string, unknown>)
+        await userStore.loadPersonContact()
+        const isExternalReg = redirectTo.startsWith('http')
+        // buildUrlWithAuth appends ?__clerk_db_jwt for satellite session sync on shared-parent domains
+        const regDestination = isExternalReg ? clerk.value!.buildUrlWithAuth(redirectTo) : redirectTo
+        await navigateTo(regDestination, { external: isExternalReg })
         return true
       }
       return false
+    } catch (err) {
+      if (sessionActivated) {
+        await clerk.value?.signOut()
+        userStore.reset()
+      }
+      error.value = clerkError(err, 'Something went wrong.')
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // ── Change password (authenticated) ───────────────────────────────────────
+
+  /**
+   * Changes the password for the currently signed-in user.
+   * Returns true on success.
+   */
+  async function changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string
+  ): Promise<boolean> {
+    error.value = ''
+    if (newPassword !== confirmPassword) {
+      error.value = 'Passwords do not match.'
+      return false
+    }
+    loading.value = true
+    try {
+      await clerk.value?.user?.updatePassword({ currentPassword, newPassword })
+      return true
     } catch (err) {
       error.value = clerkError(err, 'Something went wrong.')
       return false
@@ -214,10 +365,21 @@ export function useClerkAuth() {
     }
   }
 
-  // ── Migrated-user password reset (3 steps) ─────────────────────────────────
+  // ── Password reset (3 steps) ───────────────────────────────────────────────
+  //
+  // Two entry points share steps 1 and 2:
+  //   completeForgotPasswordReset — user-initiated forgot-password flow;
+  //                                  clears the migrated flag if present,
+  //                                  then navigates to /.
+  //   completePasswordReset       — migrated-user forced reset flow; does not
+  //                                  navigate (the page handles onward routing).
 
-  /** Sends a reset_password_email_code OTP to the given address. */
+  /**
+   * Step 1: sends a reset_password_email_code OTP to the given address.
+   * Used by both the forgot-password and migrated-user reset flows.
+   */
   async function startPasswordReset(email: string): Promise<boolean> {
+    email = email.trim().toLowerCase()
     error.value = ''
     loading.value = true
     try {
@@ -231,7 +393,11 @@ export function useClerkAuth() {
     }
   }
 
-  /** Verifies the OTP. Returns true when Clerk requires a new password. */
+  /**
+   * Step 2: verifies the OTP.
+   * Returns true when Clerk is ready to accept a new password (needs_new_password).
+   * Used by both the forgot-password and migrated-user reset flows.
+   */
   async function verifyPasswordReset(code: string): Promise<boolean> {
     error.value = ''
     loading.value = true
@@ -250,11 +416,15 @@ export function useClerkAuth() {
   }
 
   /**
-   * Completes a user-initiated forgot-password flow.
-   * Resets the password, activates the session, clears the migration flag if
-   * present, then navigates home.
+   * Step 3 (forgot-password flow): resets the password and activates the session.
+   * If the account has a migrated flag, calls /api/clear-migrated to remove it
+   * so the user is treated as fully registered going forward.
+   * Navigates to / on success.
    */
-  async function completeForgotPasswordReset(password: string, confirmPassword: string): Promise<boolean> {
+  async function completeForgotPasswordReset(
+    password: string,
+    confirmPassword: string
+  ): Promise<boolean> {
     error.value = ''
     if (password !== confirmPassword) {
       error.value = 'Passwords do not match.'
@@ -267,9 +437,6 @@ export function useClerkAuth() {
         await setActiveSignIn.value!({ session: result.createdSessionId })
         if (user.value?.publicMetadata?.migrated === true) {
           await $fetch('/api/clear-migrated', { method: 'POST' })
-          userStore.hydrate({ ...user.value?.publicMetadata, migrated: false })
-        } else {
-          userStore.hydrate(user.value?.publicMetadata ?? {})
         }
         await navigateTo('/')
         return true
@@ -284,10 +451,14 @@ export function useClerkAuth() {
   }
 
   /**
-   * Resets the password, activates the new session, then calls
-   * /api/clear-migrated to remove the migration flag from publicMetadata.
+   * Step 3 (migrated-user forced reset flow): resets the password, activates
+   * the session, and calls /api/clear-migrated to remove the migration flag.
+   * Does not navigate — the calling page handles onward routing.
    */
-  async function completePasswordReset(password: string, confirmPassword: string): Promise<boolean> {
+  async function completePasswordReset(
+    password: string,
+    confirmPassword: string
+  ): Promise<boolean> {
     error.value = ''
     if (password !== confirmPassword) {
       error.value = 'Passwords do not match.'
@@ -299,7 +470,6 @@ export function useClerkAuth() {
       if (result.status === 'complete') {
         await setActiveSignIn.value!({ session: result.createdSessionId })
         await $fetch('/api/clear-migrated', { method: 'POST' })
-        userStore.hydrate({ ...user.value?.publicMetadata, migrated: false })
         return true
       }
       return false
@@ -312,12 +482,25 @@ export function useClerkAuth() {
   }
 
   return {
-    isLoaded, isSignedIn, user,
-    error, loading,
+    isLoaded,
+    isSignedIn,
+    user,
+    error,
+    loading,
     pendingSecondFactor,
-    identifyEmail, login, signOut,
+    identifyEmail,
+    login,
+    signOut,
     submitSecondFactor,
-    startSignUp, verifyEmail, completeSignUp,
-    startPasswordReset, verifyPasswordReset, completePasswordReset, completeForgotPasswordReset,
+    checkRegistration,
+    startSignUp,
+    verifyEmail,
+    createPersonAfterVerify,
+    completeSignUp,
+    changePassword,
+    startPasswordReset,
+    verifyPasswordReset,
+    completePasswordReset,
+    completeForgotPasswordReset,
   }
 }

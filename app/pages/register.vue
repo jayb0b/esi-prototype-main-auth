@@ -1,17 +1,39 @@
 <template>
   <div class="auth-page">
     <div class="auth-card">
-      <!-- Step 1: collect email and company name -->
-      <template v-if="step === 'details'">
+      <!-- Step 1: email only -->
+      <template v-if="step === 'email'">
         <h1>Get started</h1>
         <p class="subtitle">Create your account</p>
 
-        <form @submit.prevent="handleDetails">
+        <form @submit.prevent="handleEmail">
           <div class="field">
             <label for="email">Email</label>
             <input id="email" v-model="email" type="email" placeholder="you@example.com" required />
           </div>
 
+          <!--
+            Required mount point for Clerk's CAPTCHA widget on custom sign-up flows.
+            Must be present when signUp.create() is called (email step for fast-track).
+          -->
+          <div id="clerk-captcha" />
+
+          <p v-if="error" class="error">{{ error }}</p>
+
+          <button type="submit" :disabled="loading" class="btn-submit">
+            {{ loading ? 'Checking…' : 'Continue' }}
+          </button>
+        </form>
+
+        <p class="switch">Already have an account? <NuxtLink :to="redirectTo !== '/' ? `/login?redirect=${encodeURIComponent(redirectTo)}` : '/login'">Log in</NuxtLink></p>
+      </template>
+
+      <!-- Step 2 (full form path): collect profile details -->
+      <template v-else-if="step === 'form'">
+        <h1>Tell us about yourself</h1>
+        <p class="subtitle">We need a few more details to set up your account</p>
+
+        <form @submit.prevent="handleForm">
           <div class="field-row">
             <div class="field">
               <label for="firstName">First name</label>
@@ -50,10 +72,9 @@
           </div>
 
           <!--
-            Required mount point for Clerk's CAPTCHA widget on custom sign-up flows.
-            Clerk mounts a Smart CAPTCHA here for bot protection. Without this element
-            it falls back to invisible mode, which can cause sign-up 400 errors.
-            See: https://clerk.com/docs/guides/development/custom-flows/bot-sign-up-protection
+            CAPTCHA mount point for the form step (full-form path).
+            Only one step is rendered at a time via v-if, satisfying Clerk's
+            requirement that #clerk-captcha is present when signUp.create() is called.
           -->
           <div id="clerk-captcha" />
 
@@ -64,10 +85,12 @@
           </button>
         </form>
 
-        <p class="switch">Already have an account? <NuxtLink to="/login">Log in</NuxtLink></p>
+        <p class="switch">
+          <button class="link-btn" @click="step = 'email'">Go back</button>
+        </p>
       </template>
 
-      <!-- Step 2: verify email ownership via OTP -->
+      <!-- Step 3: verify email ownership via OTP -->
       <template v-else-if="step === 'verify'">
         <h1>Check your email</h1>
         <p class="subtitle">
@@ -96,11 +119,11 @@
         </form>
 
         <p class="switch">
-          <button class="link-btn" @click="step = 'details'">Go back</button>
+          <button class="link-btn" @click="step = fastTrack ? 'email' : 'form'">Go back</button>
         </p>
       </template>
 
-      <!-- Step 3: set account password -->
+      <!-- Step 4: set account password -->
       <template v-else-if="step === 'password'">
         <h1>Set a password</h1>
         <p class="subtitle">Choose a password for your account</p>
@@ -134,11 +157,17 @@
 </template>
 
 <script setup lang="ts">
-  const { error, loading, startSignUp, verifyEmail, completeSignUp } = useClerkAuth()
+  const route = useRoute()
+  const { error, loading, checkRegistration, startSignUp, verifyEmail, createPersonAfterVerify, completeSignUp } =
+    useClerkAuth()
 
-  const step = ref<'details' | 'verify' | 'password'>('details')
+  const redirectTo = computed(() => (route.query.redirect as string) || '/')
+
+  const step = ref<'email' | 'form' | 'verify' | 'password'>('email')
 
   const email = ref('')
+  const fastTrack = ref(false)
+  const existingPersonId = ref<number | null>(null)
 
   onMounted(() => {
     const stored = sessionStorage.getItem('registrationEmail')
@@ -147,6 +176,7 @@
       sessionStorage.removeItem('registrationEmail')
     }
   })
+
   const firstName = ref('')
   const lastName = ref('')
   const jobTitle = ref('')
@@ -157,18 +187,51 @@
   const password = ref('')
   const confirm = ref('')
 
-  async function handleDetails() {
+  async function handleEmail() {
+    const result = await checkRegistration(email.value)
+    if (!result) return
+    fastTrack.value = result.fastTrack
+    existingPersonId.value = result.existingPersonId
+    if (result.town) town.value = result.town
+    if (result.country) country.value = result.country
+    if (result.fastTrack) {
+      const ok = await startSignUp(email.value)
+      if (ok) step.value = 'verify'
+    } else {
+      step.value = 'form'
+    }
+  }
+
+  async function handleForm() {
     const ok = await startSignUp(email.value)
     if (ok) step.value = 'verify'
   }
 
   async function handleVerify() {
     const result = await verifyEmail(code.value)
-    if (result === 'password') step.value = 'password'
+    if (result === 'password') {
+      if (existingPersonId.value === null) {
+        const personId = await createPersonAfterVerify({
+          email: email.value,
+          firstName: firstName.value || undefined,
+          lastName: lastName.value || undefined,
+          jobTitle: jobTitle.value || undefined,
+          companyName: company.value || undefined,
+          town: town.value || undefined,
+          country: country.value || undefined,
+        })
+        if (personId !== null) existingPersonId.value = personId
+      }
+      step.value = 'password'
+    }
   }
 
   async function handlePassword() {
-    await completeSignUp(password.value, confirm.value)
+    await completeSignUp(password.value, confirm.value, {
+      existingPersonId: existingPersonId.value,
+      town: town.value || undefined,
+      country: country.value || undefined,
+    }, redirectTo.value)
   }
 </script>
 
